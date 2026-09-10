@@ -1,0 +1,6 @@
+id,advertiser_code,name,industry,status,created_at
+1,ADV001,星河食品旗舰店,食品,active,2026-09-09T00:00:00Z
+2,ADV002,云杉美妆旗舰店,美妆,active,2026-09-09T00:00:00Z
+3,ADV003,星芽母婴生活馆,母婴,active,2026-09-09T00:00:00Z
+4,ADV004,青禾服饰旗舰店,服饰,active,2026-09-09T00:00:00Z
+5,ADV005,简筑家居生活馆,家居,active,2026-09-09T00:00:00Z
