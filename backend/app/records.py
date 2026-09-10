@@ -99,6 +99,7 @@ def execute_rule_query(
         "diagnosis": None,
         "sources": sources,
         "degraded": agent_result["degraded"],
+        "tool_calls": agent_result["tool_calls"],
     }
     if agent_result.get("degraded_reason"):
         result["degraded_reason"] = agent_result["degraded_reason"]
@@ -329,6 +330,7 @@ def execute_query(
         "diagnosis": diagnosis,
         "sources": sources,
         "degraded": agent_result["degraded"],
+        "tool_calls": agent_result["tool_calls"],
     }
     if agent_result.get("degraded_reason"):
         result["degraded_reason"] = agent_result["degraded_reason"]

@@ -3,9 +3,10 @@ from __future__ import annotations
 import sqlite3
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime, time, timedelta, timezone
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -27,6 +28,7 @@ from backend.app.conversations import (
     save_exchange,
 )
 from backend.app.metrics import get_campaign_metrics
+from backend.app.evaluation import compare_batches, create_batch, get_batch, list_batches, run_batch
 from backend.app.records import (
     ClarificationExpired,
     ClarificationNotFound,
@@ -74,6 +76,10 @@ class ClarificationMessageRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     rating: Literal["helpful", "not_helpful"]
+
+
+class EvaluationRequest(BaseModel):
+    name: str = "离线回归评估"
 
 
 class ApiError(Exception):
@@ -145,6 +151,47 @@ def require_admin(user: dict[str, object] = Depends(require_user)) -> dict[str, 
     if user["role"] != "admin":
         raise ApiError(403, "ADMIN_REQUIRED", "需要管理员权限。")
     return user
+
+
+def admin_overview_data(connection: sqlite3.Connection) -> dict[str, object]:
+    business_timezone = timezone(timedelta(hours=8))
+    local_today = datetime.now(business_timezone).date()
+    start_local = datetime.combine(local_today, time.min, business_timezone)
+    start = start_local.astimezone(UTC).isoformat()
+    end = (start_local + timedelta(days=1)).astimezone(UTC).isoformat()
+    totals = dict(connection.execute(
+        "SELECT COUNT(*) AS requests, "
+        "COALESCE(SUM(CASE WHEN status = 'completed' AND COALESCE(json_extract(result_json, '$.degraded'), 0) = 0 THEN 1 ELSE 0 END), 0) AS completed, "
+        "COALESCE(SUM(CASE WHEN status = 'completed' AND json_extract(result_json, '$.degraded') = 1 THEN 1 ELSE 0 END), 0) AS degraded, "
+        "COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed, "
+        "COALESCE(ROUND(AVG(CASE WHEN status = 'completed' THEN total_latency_ms END)), 0) AS average_latency_ms "
+        "FROM processing_records WHERE created_at >= ? AND created_at < ?",
+        (start, end),
+    ).fetchone())
+    intent_counts = {name: 0 for name in ("metric_query", "anomaly_diagnosis", "rule_qa", "unknown")}
+    for row in connection.execute(
+        "SELECT intent, COUNT(*) AS count FROM processing_records "
+        "WHERE created_at >= ? AND created_at < ? GROUP BY intent", (start, end)
+    ):
+        intent_counts[row["intent"] or "unknown"] = row["count"]
+    feedback = dict(connection.execute(
+        "SELECT COALESCE(SUM(CASE WHEN f.rating = 'helpful' THEN 1 ELSE 0 END), 0) AS helpful, "
+        "COALESCE(SUM(CASE WHEN f.rating = 'not_helpful' THEN 1 ELSE 0 END), 0) AS not_helpful "
+        "FROM processing_records r LEFT JOIN feedback f ON f.record_id = r.id "
+        "WHERE r.created_at >= ? AND r.created_at < ?", (start, end)
+    ).fetchone())
+    conversations = connection.execute(
+        "SELECT COUNT(*) FROM conversations WHERE created_at >= ? AND created_at < ?", (start, end)
+    ).fetchone()[0]
+    batches = list_batches(connection)
+    return {
+        "date": local_today.isoformat(),
+        "timezone": "Asia/Shanghai",
+        "totals": {**totals, "conversations": conversations},
+        "intent_counts": intent_counts,
+        "feedback": feedback,
+        "latest_evaluation": batches[0] if batches else None,
+    }
 
 
 @app.get("/api/health")
@@ -396,6 +443,14 @@ def submit_feedback(
     return ok(result)
 
 
+@app.get("/api/admin/overview")
+def admin_overview(
+    connection: sqlite3.Connection = Depends(get_db),
+    _admin: dict[str, object] = Depends(require_admin),
+) -> dict[str, object | None]:
+    return ok(admin_overview_data(connection))
+
+
 @app.get("/api/admin/knowledge-sources")
 def admin_knowledge_sources(
     category: str | None = None,
@@ -425,3 +480,52 @@ def admin_knowledge_sources(
         item["chunks"] = [dict(chunk) for chunk in chunks]
         items.append(item)
     return ok({"items": items, "page": page, "page_size": page_size, "total": total})
+
+
+@app.post("/api/admin/evaluations", status_code=201, response_model=None)
+def start_evaluation(
+    body: EvaluationRequest,
+    background_tasks: BackgroundTasks,
+    connection: sqlite3.Connection = Depends(get_db),
+    admin: dict[str, object] = Depends(require_admin),
+) -> dict[str, object | None] | JSONResponse:
+    try:
+        batch = create_batch(connection, body.name, int(admin["id"]))
+    except RuntimeError:
+        return error(409, "EVALUATION_ALREADY_RUNNING", "已有评估批次正在运行。")
+    database_path = connection.execute("PRAGMA database_list").fetchone()["file"]
+    background_tasks.add_task(run_batch, database_path, int(batch["batch_id"]))
+    return ok(batch)
+
+
+@app.get("/api/admin/evaluations")
+def evaluations(
+    connection: sqlite3.Connection = Depends(get_db),
+    _admin: dict[str, object] = Depends(require_admin),
+) -> dict[str, object | None]:
+    return ok({"items": list_batches(connection)})
+
+
+@app.get("/api/admin/evaluations/compare", response_model=None)
+def evaluation_comparison(
+    left: int,
+    right: int,
+    connection: sqlite3.Connection = Depends(get_db),
+    _admin: dict[str, object] = Depends(require_admin),
+) -> dict[str, object | None] | JSONResponse:
+    comparison = compare_batches(connection, left, right)
+    if comparison is None:
+        return error(404, "EVALUATION_NOT_FOUND", "未找到需要比较的评估批次。")
+    return ok(comparison)
+
+
+@app.get("/api/admin/evaluations/{batch_id}", response_model=None)
+def evaluation_detail(
+    batch_id: int,
+    connection: sqlite3.Connection = Depends(get_db),
+    _admin: dict[str, object] = Depends(require_admin),
+) -> dict[str, object | None] | JSONResponse:
+    batch = get_batch(connection, batch_id)
+    if batch is None:
+        return error(404, "EVALUATION_NOT_FOUND", f"未找到评估批次 {batch_id}。")
+    return ok(batch)

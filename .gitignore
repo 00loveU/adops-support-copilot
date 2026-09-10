@@ -1,6 +1,5 @@
 # 环境变量和密钥
 .env
-.env.example
 # Python
 .venv/
 __pycache__/

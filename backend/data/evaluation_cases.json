@@ -1,0 +1,92 @@
+[
+  {
+    "case_code": "EVAL-MET-001",
+    "category": "metric",
+    "input": {"message": "查询 CMP001 在 2026-09-08 的指标", "context": {"campaign_code": "CMP001", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "metric_query", "params": {"campaign_code": "CMP001", "start_date": "2026-09-08", "end_date": "2026-09-08"}, "metrics": {"ctr": 0.015, "cvr": 0.02, "cpa_cents": 5000, "roas": 2.0}, "expected_tool": "query_campaign_metrics"}
+  },
+  {
+    "case_code": "EVAL-MET-002",
+    "category": "metric",
+    "input": {"message": "查询 CMP007 在 2026-09-08 的指标", "context": {"campaign_code": "CMP007", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "metric_query", "params": {"campaign_code": "CMP007", "start_date": "2026-09-08", "end_date": "2026-09-08"}, "metrics": {"ctr": 0.015, "cvr": 0.0, "cpa_cents": null, "roas": 0.0}, "expected_tool": "query_campaign_metrics"}
+  },
+  {
+    "case_code": "EVAL-MET-003",
+    "category": "metric",
+    "input": {"message": "查询 CMP015 在 2026-09-08 的指标", "context": {"campaign_code": "CMP015", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "metric_query", "params": {"campaign_code": "CMP015", "start_date": "2026-09-08", "end_date": "2026-09-08"}, "metrics": {"ctr": null, "cvr": null, "cpa_cents": null, "roas": null}, "expected_tool": "query_campaign_metrics"}
+  },
+  {
+    "case_code": "EVAL-DIAG-001",
+    "category": "diagnosis",
+    "input": {"message": "诊断 CMP002 在 2026-09-08 为什么异常", "context": {"campaign_code": "CMP002", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "anomaly_diagnosis", "anomaly_rule_ids": ["ANOM-LOW-CTR-001"], "source_codes": ["RULE-CTR-001"], "expected_tool": "diagnose_campaign"}
+  },
+  {
+    "case_code": "EVAL-DIAG-002",
+    "category": "diagnosis",
+    "input": {"message": "诊断 CMP003 在 2026-09-08 的消耗异常", "context": {"campaign_code": "CMP003", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "anomaly_diagnosis", "anomaly_rule_ids": ["ANOM-SPEND-CHANGE-001"], "source_codes": ["RULE-SPEND-001"], "expected_tool": "diagnose_campaign"}
+  },
+  {
+    "case_code": "EVAL-DIAG-003",
+    "category": "diagnosis",
+    "input": {"message": "诊断 CMP007 在 2026-09-08 为什么没有转化", "context": {"campaign_code": "CMP007", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "anomaly_diagnosis", "anomaly_rule_ids": ["ANOM-NO-CONVERSION-001", "ANOM-LOW-ROAS-001"], "source_codes": ["RULE-CVR-001", "RULE-ROAS-001"], "expected_tool": "diagnose_campaign"}
+  },
+  {
+    "case_code": "EVAL-DIAG-004",
+    "category": "diagnosis",
+    "input": {"message": "诊断 CMP010 在 2026-09-08 为什么没有曝光", "context": {"campaign_code": "CMP010", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "anomaly_diagnosis", "anomaly_rule_ids": ["ANOM-NO-IMPRESSION-001"], "source_codes": ["RULE-DELIVERY-001"], "expected_tool": "diagnose_campaign"}
+  },
+  {
+    "case_code": "EVAL-DIAG-005",
+    "category": "diagnosis",
+    "input": {"message": "诊断 CMP013 在 2026-09-08 为什么异常", "context": {"campaign_code": "CMP013", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "anomaly_diagnosis", "anomaly_rule_ids": ["ANOM-LOW-CVR-001", "ANOM-HIGH-CPA-001", "ANOM-LOW-ROAS-001"], "source_codes": ["RULE-CVR-001", "RULE-CPA-001", "RULE-ROAS-001"], "expected_tool": "diagnose_campaign"}
+  },
+  {
+    "case_code": "EVAL-DIAG-006",
+    "category": "diagnosis",
+    "input": {"message": "诊断 CMP014 在 2026-09-08 为什么异常", "context": {"campaign_code": "CMP014", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "anomaly_diagnosis", "anomaly_rule_ids": [], "source_codes": [], "warning_contains": ["曝光量不足 1,000"], "expected_tool": "diagnose_campaign"}
+  },
+  {
+    "case_code": "EVAL-DIAG-007",
+    "category": "diagnosis",
+    "input": {"message": "诊断 CMP015 在 2026-09-08 为什么没有曝光", "context": {"campaign_code": "CMP015", "start_date": "2026-09-08", "end_date": "2026-09-08"}},
+    "expected": {"intent": "anomaly_diagnosis", "anomaly_rule_ids": [], "source_codes": [], "expected_tool": "diagnose_campaign"}
+  },
+  {
+    "case_code": "EVAL-RAG-001",
+    "category": "retrieval",
+    "input": {"message": "CTR 是什么意思？", "context": {}},
+    "expected": {"intent": "rule_qa", "primary_source": "RULE-METRIC-001", "expected_tool": "search_knowledge"}
+  },
+  {
+    "case_code": "EVAL-RAG-002",
+    "category": "retrieval",
+    "input": {"message": "广告没有曝光怎么排查？", "context": {}},
+    "expected": {"intent": "rule_qa", "primary_source": "RULE-DELIVERY-001", "expected_tool": "search_knowledge"}
+  },
+  {
+    "case_code": "EVAL-RAG-003",
+    "category": "retrieval",
+    "input": {"message": "真实平台封号后怎么申诉？", "context": {}},
+    "expected": {"intent": "rule_qa", "primary_source": null, "require_no_tool": true}
+  },
+  {
+    "case_code": "EVAL-CLR-001",
+    "category": "clarification",
+    "input": {"message": "查询指标", "context": {}},
+    "expected": {"intent": "metric_query", "missing_fields": ["campaign_id", "start_date", "end_date"], "require_no_tool": true}
+  },
+  {
+    "case_code": "EVAL-CLR-002",
+    "category": "clarification",
+    "input": {"message": "诊断 CMP013 为什么异常", "context": {}},
+    "expected": {"intent": "anomaly_diagnosis", "missing_fields": ["start_date", "end_date"], "require_no_tool": true}
+  }
+]

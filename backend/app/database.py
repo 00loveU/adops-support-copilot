@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -179,6 +180,48 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation
 ON conversation_messages(conversation_id, id);
+
+CREATE TABLE IF NOT EXISTS evaluation_cases (
+    id INTEGER PRIMARY KEY,
+    case_code TEXT NOT NULL UNIQUE,
+    category TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    expected_json TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_batches (
+    id INTEGER PRIMARY KEY,
+    batch_code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    started_by INTEGER NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    total_cases INTEGER NOT NULL DEFAULT 0,
+    passed_cases INTEGER NOT NULL DEFAULT 0,
+    failed_cases INTEGER NOT NULL DEFAULT 0,
+    summary_json TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_results (
+    id INTEGER PRIMARY KEY,
+    batch_id INTEGER NOT NULL REFERENCES evaluation_batches(id),
+    case_id INTEGER NOT NULL REFERENCES evaluation_cases(id),
+    passed INTEGER NOT NULL CHECK (passed IN (0, 1)),
+    actual_json TEXT NOT NULL,
+    scores_json TEXT NOT NULL,
+    failure_reason TEXT,
+    latency_ms INTEGER NOT NULL,
+    trace_id TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(batch_id, case_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evaluation_batches_created
+ON evaluation_batches(created_at DESC);
 """
 
 
@@ -193,6 +236,7 @@ def ensure_schema(path: str | Path = DEFAULT_DB_PATH) -> None:
     connection = connect(path)
     try:
         connection.executescript(SCHEMA)
+        _replace_evaluation_cases(connection)
         connection.commit()
     finally:
         connection.close()
@@ -276,6 +320,25 @@ def _replace_knowledge(connection: sqlite3.Connection) -> None:
             )
 
 
+def _replace_evaluation_cases(connection: sqlite3.Connection) -> None:
+    cases = json.loads((DATA_DIR / "evaluation_cases.json").read_text(encoding="utf-8"))
+    for case in cases:
+        connection.execute(
+            "INSERT INTO evaluation_cases "
+            "(case_code, category, input_json, expected_json, enabled, created_at) "
+            "VALUES (?, ?, ?, ?, 1, ?) "
+            "ON CONFLICT(case_code) DO UPDATE SET category = excluded.category, "
+            "input_json = excluded.input_json, expected_json = excluded.expected_json",
+            (
+                case["case_code"],
+                case["category"],
+                json.dumps(case["input"], ensure_ascii=False, separators=(",", ":")),
+                json.dumps(case["expected"], ensure_ascii=False, separators=(",", ":")),
+                "2026-09-10T00:00:00Z",
+            ),
+        )
+
+
 def initialize_database(path: str | Path = DEFAULT_DB_PATH) -> None:
     from backend.app.auth import hash_password
 
@@ -310,6 +373,7 @@ def initialize_database(path: str | Path = DEFAULT_DB_PATH) -> None:
         _replace_csv(connection, "campaigns", DATA_DIR / "campaigns.csv")
         _replace_csv(connection, "daily_metrics", DATA_DIR / "daily_metrics.csv")
         _replace_knowledge(connection)
+        _replace_evaluation_cases(connection)
         connection.commit()
     except Exception:
         connection.rollback()

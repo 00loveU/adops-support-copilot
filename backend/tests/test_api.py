@@ -122,6 +122,7 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(payload["trace_id"].startswith("tr_"))
         self.assertEqual("completed", payload["data"]["status"])
         self.assertEqual(0.014852, payload["data"]["metrics"]["calculated"]["ctr"])
+        self.assertEqual("mock_tool", payload["data"]["tool_calls"][0]["tool"])
 
         record_id = payload["data"]["record_id"]
         records = self.client.get("/api/records").json()["data"]
@@ -332,6 +333,48 @@ class ApiTest(unittest.TestCase):
         self.assertEqual("RULE-CTR-001", data["items"][0]["source_code"])
         self.assertEqual(4, len(data["items"][0]["chunks"]))
 
+    def test_admin_overview_uses_confirmed_daily_definitions(self) -> None:
+        self.login()
+        response = self.client.post(
+            "/api/assistant/messages", json={"message": "CTR 是什么意思？", "context": {}}
+        )
+        record_id = response.json()["data"]["record_id"]
+        self.client.post(f"/api/records/{record_id}/feedback", json={"rating": "helpful"})
+        self.assertEqual(403, self.client.get("/api/admin/overview").status_code)
+
+        self.client.cookies.clear()
+        self.client.post(
+            "/api/auth/login", json={"username": "admin1", "password": "Admin123!"}
+        )
+        overview = self.client.get("/api/admin/overview").json()["data"]
+        self.assertEqual("Asia/Shanghai", overview["timezone"])
+        self.assertEqual(1, overview["totals"]["requests"])
+        self.assertEqual(1, overview["totals"]["completed"])
+        self.assertEqual(0, overview["totals"]["degraded"])
+        self.assertEqual(1, overview["totals"]["conversations"])
+        self.assertEqual(1, overview["intent_counts"]["rule_qa"])
+        self.assertEqual({"helpful": 1, "not_helpful": 0}, overview["feedback"])
+
+    def test_only_admin_can_start_one_evaluation_at_a_time(self) -> None:
+        self.login()
+        denied = self.client.post("/api/admin/evaluations", json={"name": "无权限"})
+        self.assertEqual(403, denied.status_code)
+
+        self.client.cookies.clear()
+        self.client.post(
+            "/api/auth/login", json={"username": "admin1", "password": "Admin123!"}
+        )
+        with patch("backend.app.main.run_batch"):
+            created = self.client.post("/api/admin/evaluations", json={"name": "回归测试"})
+            self.assertEqual(201, created.status_code)
+            batch_id = created.json()["data"]["batch_id"]
+            duplicate = self.client.post("/api/admin/evaluations", json={"name": "重复运行"})
+            self.assertEqual(409, duplicate.status_code)
+
+        detail = self.client.get(f"/api/admin/evaluations/{batch_id}").json()["data"]
+        self.assertEqual("running", detail["status"])
+        self.assertEqual(15, detail["total_cases"])
+
     def test_conversation_is_persistent_and_private(self) -> None:
         self.login()
         first = self.client.post(
@@ -358,6 +401,7 @@ class ApiTest(unittest.TestCase):
         detail = self.client.get(f"/api/conversations/{conversation_id}").json()["data"]
         self.assertEqual(["user", "assistant", "user", "assistant"], [m["role"] for m in detail["messages"]])
         self.assertEqual(second.json()["data"]["record_id"], detail["latest_result"]["record_id"])
+        self.assertEqual("mock_tool", detail["latest_result"]["tool_calls"][0]["tool"])
 
         self.client.cookies.clear()
         self.client.post(
