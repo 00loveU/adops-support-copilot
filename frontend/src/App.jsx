@@ -436,6 +436,171 @@ function Overview({ showToast }) {
   );
 }
 
+const traceStatusLabels = {
+  completed: "正常完成",
+  degraded: "降级完成",
+  failed: "执行失败",
+  waiting_clarification: "等待补充",
+};
+
+function Traces({ showToast }) {
+  const [traces, setTraces] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [status, setStatus] = useState("all");
+
+  async function load(nextStatus = status) {
+    try {
+      const data = await api(`/api/admin/traces?status=${nextStatus}`);
+      setTraces(data.items);
+      setSelected(null);
+    } catch (error) { showToast(error.message, true); }
+  }
+
+  useEffect(() => { load(status); }, [status]);
+
+  async function openTrace(traceId) {
+    try { setSelected(await api(`/api/admin/traces/${traceId}`)); }
+    catch (error) { showToast(error.message, true); }
+  }
+
+  async function addCandidate() {
+    try {
+      const candidate = await api(`/api/admin/traces/${selected.trace_id}/evaluation-candidate`, { method: "POST" });
+      setSelected({ ...selected, evaluation_candidate: candidate });
+      showToast("已加入评估候选，请到候选管理页补充预期结果");
+    } catch (error) { showToast(error.message, true); }
+  }
+
+  return (
+    <section className="page-card trace-page">
+      <div className="page-title"><div><p className="eyebrow">TRACE TROUBLESHOOTING</p><h2>Trace 排障</h2></div><span>最近 {traces.length} 条 · 不展示内部推理</span></div>
+      <div className="trace-filters">
+        {[['all', '全部'], ['completed', '正常'], ['degraded', '降级'], ['failed', '失败']].map(([value, label]) => <button key={value} className={status === value ? "active" : ""} onClick={() => setStatus(value)}>{label}</button>)}
+      </div>
+      <div className="trace-layout">
+        <div className="trace-list">
+          {traces.length === 0 ? <p className="muted">当前筛选条件下没有 Trace。</p> : traces.map((trace) => (
+            <button key={trace.trace_id} className={selected?.trace_id === trace.trace_id ? "active" : ""} onClick={() => openTrace(trace.trace_id)}>
+              <div><strong>{trace.original_query}</strong><span className={`trace-status ${trace.status}`}>{traceStatusLabels[trace.status] || trace.status}</span></div>
+              <small>{trace.display_name} · {new Date(trace.created_at).toLocaleString("zh-CN")}</small>
+              <code>{trace.trace_id}</code>
+            </button>
+          ))}
+        </div>
+        <div className="trace-detail">
+          {!selected ? <div className="empty-state small"><span>↗</span><p>选择一条 Trace 查看执行事件</p></div> : <>
+            <div className="trace-heading"><div><p className="eyebrow">{selected.trace_id}</p><h3>{selected.original_query}</h3></div><span className={`trace-status ${selected.status}`}>{traceStatusLabels[selected.status] || selected.status}</span></div>
+            <dl className="trace-meta"><div><dt>发起用户</dt><dd>{selected.display_name}（{selected.username}）</dd></div><div><dt>识别意图</dt><dd>{intentLabels[selected.intent] || selected.intent}</dd></div><div><dt>总耗时</dt><dd>{selected.total_latency_ms ?? "-"} ms</dd></div><div><dt>事件数</dt><dd>{selected.events.length}</dd></div></dl>
+            {selected.evaluation_candidate ? <p className="candidate-linked">已加入评估候选 #{selected.evaluation_candidate.id} · {selected.evaluation_candidate.status}</p> : (["degraded", "failed"].includes(selected.status) || selected.feedback === "not_helpful") && <button className="candidate-button" onClick={addCandidate}>＋ 加入评估候选</button>}
+            <div className="trace-timeline">{selected.events.map((event) => (
+              <article key={event.sequence_no} className={event.status}>
+                <i>{event.sequence_no}</i>
+                <div><header><strong>{event.stage}</strong><span>{event.event_type}</span><small>{event.latency_ms ?? "-"} ms</small></header>
+                  {event.error_code && <p className="trace-error">错误码：{event.error_code}</p>}
+                  {(event.input || event.output) && <details><summary>查看输入 / 输出</summary><pre>{JSON.stringify({ input: event.input, output: event.output }, null, 2)}</pre></details>}
+                </div>
+              </article>
+            ))}</div>
+          </>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+const candidateCategoryLabels = {
+  metric: "指标查询",
+  diagnosis: "异常诊断",
+  retrieval: "规则问答",
+  clarification: "参数澄清",
+};
+
+function EvaluationCandidates({ showToast }) {
+  const [items, setItems] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [status, setStatus] = useState("draft");
+  const [expectedText, setExpectedText] = useState("{}");
+
+  async function load(nextStatus = status) {
+    try {
+      const data = await api(`/api/admin/evaluation-candidates?status=${nextStatus}`);
+      setItems(data.items);
+      setSelected(null);
+    } catch (error) { showToast(error.message, true); }
+  }
+
+  useEffect(() => { load(status); }, [status]);
+
+  function open(item) {
+    setSelected({ ...item });
+    setExpectedText(JSON.stringify(item.expected_result || {}, null, 2));
+  }
+
+  async function save(notify = true) {
+    let expectedResult;
+    try { expectedResult = JSON.parse(expectedText); }
+    catch { showToast("预期关键结果必须是合法 JSON。", true); return false; }
+    if (!expectedResult || Array.isArray(expectedResult) || typeof expectedResult !== "object") {
+      showToast("预期关键结果必须是 JSON 对象。", true); return false;
+    }
+    try {
+      await api(`/api/admin/evaluation-candidates/${selected.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          category: selected.category,
+          expected_intent: selected.expected_intent,
+          expected_tool: selected.expected_tool || null,
+          expected_result: expectedResult,
+          notes: selected.notes || "",
+        }),
+      });
+      setSelected({ ...selected, expected_result: expectedResult });
+      if (notify) showToast("候选预期已保存");
+      return true;
+    } catch (error) { showToast(error.message, true); return false; }
+  }
+
+  async function promote() {
+    if (!(await save(false))) return;
+    if (!window.confirm("确认加入固定评估集？加入后将不能再修改。")) return;
+    try {
+      await api(`/api/admin/evaluation-candidates/${selected.id}/promote`, { method: "POST" });
+      showToast("已加入正式评估集，下一批评估会自动执行。");
+      await load(status);
+    } catch (error) { showToast(error.message, true); }
+  }
+
+  return (
+    <section className="page-card candidate-page">
+      <div className="page-title"><div><p className="eyebrow">EVALUATION CANDIDATES</p><h2>评估候选</h2></div><span>{items.length} 条 · 管理员人工确认</span></div>
+      <div className="trace-filters">{[["draft", "待确认"], ["promoted", "已加入"], ["all", "全部"]].map(([value, label]) => <button key={value} className={status === value ? "active" : ""} onClick={() => setStatus(value)}>{label}</button>)}</div>
+      <div className="candidate-layout">
+        <div className="candidate-list">{items.length === 0 ? <p className="muted">暂无候选样本。</p> : items.map((item) => <button key={item.id} className={selected?.id === item.id ? "active" : ""} onClick={() => open(item)}><div><strong>#{item.id} {item.original_query}</strong><span>{candidateCategoryLabels[item.category]}</span></div><small>{item.source_user_name} · {item.trace_id}</small></button>)}</div>
+        <div className="candidate-editor">{!selected ? <div className="empty-state small"><span>◎</span><p>选择候选并设置预期结果</p></div> : <>
+          <div className="candidate-title"><div><p className="eyebrow">CANDIDATE #{selected.id}</p><h3>{selected.original_query}</h3></div><span className={`batch-status ${selected.status === "promoted" ? "completed" : ""}`}>{selected.status}</span></div>
+          <p className="candidate-source">来源：{selected.trace_id} · {selected.source_user_name}</p>
+          <div className="field-row"><label>用例类别<select disabled={selected.status === "promoted"} value={selected.category} onChange={(event) => setSelected({ ...selected, category: event.target.value })}>{Object.entries(candidateCategoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>预期意图<select disabled={selected.status === "promoted"} value={selected.expected_intent} onChange={(event) => setSelected({ ...selected, expected_intent: event.target.value })}><option value="metric_query">指标查询</option><option value="anomaly_diagnosis">异常诊断</option><option value="rule_qa">规则问答</option><option value="unknown">其他</option></select></label></div>
+          <label>预期工具<select disabled={selected.status === "promoted"} value={selected.expected_tool || ""} onChange={(event) => setSelected({ ...selected, expected_tool: event.target.value })}><option value="">不指定</option><option value="query_campaign_metrics">query_campaign_metrics</option><option value="diagnose_campaign">diagnose_campaign</option><option value="search_knowledge">search_knowledge</option></select></label>
+          <label>预期关键结果（JSON）<textarea disabled={selected.status === "promoted"} rows="8" value={expectedText} onChange={(event) => setExpectedText(event.target.value)} /></label>
+          <p className="candidate-help">示例：指标 {`{"metrics":{"ctr":0.015}}`}；诊断 {`{"anomaly_rule_ids":["ANOM-LOW-CTR-001"]}`}；检索 {`{"primary_source":"RULE-CTR-001"}`}</p>
+          <label>复核备注<textarea disabled={selected.status === "promoted"} rows="3" value={selected.notes || ""} onChange={(event) => setSelected({ ...selected, notes: event.target.value })} /></label>
+          {selected.status === "draft" && <div className="candidate-actions"><button onClick={() => save(true)}>保存草稿</button><button className="primary-button" onClick={promote}>确认加入正式评估集</button></div>}
+          <details className="candidate-actual"><summary>查看当时输入与实际结果</summary><pre>{JSON.stringify({ input: selected.input, actual: selected.actual }, null, 2)}</pre></details>
+        </>}</div>
+      </div>
+    </section>
+  );
+}
+
+const snapshotLabels = {
+  model: "模型",
+  prompt_version: "提示词版本",
+  code_version: "代码版本",
+  knowledge_version: "知识库版本",
+  evaluation_set_version: "评估集版本",
+  max_steps: "最大步数",
+};
+
 function Evaluations({ showToast }) {
   const [batches, setBatches] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -444,11 +609,13 @@ function Evaluations({ showToast }) {
   const [left, setLeft] = useState("");
   const [right, setRight] = useState("");
   const [comparison, setComparison] = useState(null);
+  const [caseCount, setCaseCount] = useState(15);
 
   async function load(openLatest = false) {
     try {
       const data = await api("/api/admin/evaluations");
       setBatches(data.items);
+      setCaseCount(data.case_count);
       if (openLatest && data.items.length) await openBatch(data.items[0].id);
       if (!left && data.items[1]) setLeft(String(data.items[1].id));
       if (!right && data.items[0]) setRight(String(data.items[0].id));
@@ -486,7 +653,7 @@ function Evaluations({ showToast }) {
   const summary = selected?.summary;
   return (
     <section className="page-card evaluation-page">
-      <div className="page-title"><div><p className="eyebrow">OFFLINE EVALUATION</p><h2>离线评估</h2></div><span>固定评估集 · 15 条</span></div>
+      <div className="page-title"><div><p className="eyebrow">OFFLINE EVALUATION</p><h2>离线评估</h2></div><span>当前评估集 · {caseCount} 条</span></div>
       <div className="evaluation-actions">
         <input value={name} onChange={(event) => setName(event.target.value)} aria-label="评估批次名称" />
         <button className="primary-button" onClick={start} disabled={starting || batches.some((item) => ["pending", "running"].includes(item.status))}>{starting ? "启动中…" : "运行新评估"}</button>
@@ -509,6 +676,7 @@ function Evaluations({ showToast }) {
               <article><span>平均耗时</span><strong>{summary.average_latency_ms} ms</strong></article>
               <article><span>降级用例</span><strong>{summary.degraded_cases}</strong></article>
             </div>}
+            {selected.snapshot && <section className="evaluation-snapshot"><div className="section-heading"><h4>本批次版本快照</h4><span>{new Date(selected.snapshot.captured_at).toLocaleString("zh-CN")}</span></div><div>{Object.entries(snapshotLabels).map(([key, label]) => <article key={key}><span>{label}</span><code>{selected.snapshot[key] ?? "-"}</code></article>)}</div></section>}
             {summary && <div className="category-rates">{Object.entries(summary.category_rates).map(([category, rate]) => <div key={category}><span>{evaluationCategoryLabels[category] || category}</span><strong>{percent(rate)}</strong></div>)}</div>}
             <div className="evaluation-results">{selected.results?.map((item) => (
               <details key={item.case_code} className={item.passed ? "passed" : "failed"}>
@@ -521,7 +689,7 @@ function Evaluations({ showToast }) {
           </>}
         </div>
       </div>
-      {batches.length >= 2 && <section className="evaluation-compare"><div className="section-heading"><h3>批次对比</h3><span>右侧批次 − 左侧批次</span></div><div><select value={left} onChange={(event) => setLeft(event.target.value)}>{batches.map((item) => <option key={item.id} value={item.id}>{item.batch_code}</option>)}</select><span>对比</span><select value={right} onChange={(event) => setRight(event.target.value)}>{batches.map((item) => <option key={item.id} value={item.id}>{item.batch_code}</option>)}</select><button onClick={compare}>计算差异</button></div>{comparison && <p>总体通过率变化：<strong>{comparison.differences.overall_pass_rate >= 0 ? "+" : ""}{percent(comparison.differences.overall_pass_rate)}</strong> · 平均耗时变化：<strong>{comparison.differences.average_latency_ms} ms</strong> · 降级用例变化：<strong>{comparison.differences.degraded_cases}</strong></p>}</section>}
+      {batches.length >= 2 && <section className="evaluation-compare"><div className="section-heading"><h3>批次对比</h3><span>右侧批次 − 左侧批次</span></div><div><select value={left} onChange={(event) => setLeft(event.target.value)}>{batches.map((item) => <option key={item.id} value={item.id}>{item.batch_code}</option>)}</select><span>对比</span><select value={right} onChange={(event) => setRight(event.target.value)}>{batches.map((item) => <option key={item.id} value={item.id}>{item.batch_code}</option>)}</select><button onClick={compare}>计算差异</button></div>{comparison && <><p>总体通过率变化：<strong>{comparison.differences.overall_pass_rate >= 0 ? "+" : ""}{percent(comparison.differences.overall_pass_rate)}</strong> · 平均耗时变化：<strong>{comparison.differences.average_latency_ms} ms</strong> · 降级用例变化：<strong>{comparison.differences.degraded_cases}</strong></p><p className="snapshot-comparison">版本：{comparison.left_batch.snapshot?.code_version || "旧批次无快照"} → {comparison.right_batch.snapshot?.code_version || "旧批次无快照"} · 模型：{comparison.left_batch.snapshot?.model || "-"} → {comparison.right_batch.snapshot?.model || "-"}</p></>}</section>}
     </section>
   );
 }
@@ -543,15 +711,17 @@ export default function App() {
   if (!user) return <Login onLogin={setUser} />;
   return (
     <div className="app-shell">
-      <aside><div className="brand"><div className="brand-mark">AO</div><div><strong>AdOps</strong><span>Support Copilot</span></div></div><nav><button className={page === "workspace" ? "active" : ""} onClick={() => setPage("workspace")}><span>✦</span>智能分析</button><button className={page === "records" ? "active" : ""} onClick={() => setPage("records")}><span>◫</span>处理记录</button>{user.role === "admin" && <><p>管理员</p><button className={page === "overview" ? "active" : ""} onClick={() => setPage("overview")}><span>▦</span>系统概览</button><button className={page === "knowledge" ? "active" : ""} onClick={() => setPage("knowledge")}><span>◇</span>知识来源</button><button className={page === "evaluations" ? "active" : ""} onClick={() => setPage("evaluations")}><span>◎</span>离线评估</button></>}</nav><div className="user-block"><div>{user.display_name.slice(0, 1)}</div><p><strong>{user.display_name}</strong><span>{user.role === "admin" ? "系统管理员" : "广告运营"}</span></p><button onClick={logout} title="退出登录">↪</button></div></aside>
+      <aside><div className="brand"><div className="brand-mark">AO</div><div><strong>AdOps</strong><span>Support Copilot</span></div></div><nav><button className={page === "workspace" ? "active" : ""} onClick={() => setPage("workspace")}><span>✦</span>智能分析</button><button className={page === "records" ? "active" : ""} onClick={() => setPage("records")}><span>◫</span>处理记录</button>{user.role === "admin" && <><p>管理员</p><button className={page === "overview" ? "active" : ""} onClick={() => setPage("overview")}><span>▦</span>系统概览</button><button className={page === "knowledge" ? "active" : ""} onClick={() => setPage("knowledge")}><span>◇</span>知识来源</button><button className={page === "traces" ? "active" : ""} onClick={() => setPage("traces")}><span>⌁</span>Trace 排障</button><button className={page === "candidates" ? "active" : ""} onClick={() => setPage("candidates")}><span>＋</span>评估候选</button><button className={page === "evaluations" ? "active" : ""} onClick={() => setPage("evaluations")}><span>◎</span>离线评估</button></>}</nav><div className="user-block"><div>{user.display_name.slice(0, 1)}</div><p><strong>{user.display_name}</strong><span>{user.role === "admin" ? "系统管理员" : "广告运营"}</span></p><button onClick={logout} title="退出登录">↪</button></div></aside>
       <main className="app-main">
-        <header><div><p className="eyebrow">OPERATIONS CENTER</p><h1>{{ workspace: "广告诊断工作台", records: "处理记录", overview: "系统概览", knowledge: "知识来源", evaluations: "离线评估" }[page]}</h1></div><span className="system-status"><i></i>系统运行正常</span></header>
+        <header><div><p className="eyebrow">OPERATIONS CENTER</p><h1>{{ workspace: "广告诊断工作台", records: "处理记录", overview: "系统概览", knowledge: "知识来源", traces: "Trace 排障", candidates: "评估候选", evaluations: "离线评估" }[page]}</h1></div><span className="system-status"><i></i>系统运行正常</span></header>
         <div hidden={page !== "workspace"}>
           <Workspace showToast={showToast} conversationId={conversationId} setConversationId={setConversationId} />
         </div>
         {page === "records" && <Records showToast={showToast} />}
         {page === "overview" && <Overview showToast={showToast} />}
         {page === "knowledge" && <Knowledge showToast={showToast} />}
+        {page === "traces" && <Traces showToast={showToast} />}
+        {page === "candidates" && <EvaluationCandidates showToast={showToast} />}
         {page === "evaluations" && <Evaluations showToast={showToast} />}
       </main>
       {toast && <div className={`toast ${toast.isError ? "error" : ""}`} role="status">{toast.message}</div>}

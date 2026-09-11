@@ -191,6 +191,27 @@ CREATE TABLE IF NOT EXISTS evaluation_cases (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS evaluation_candidates (
+    id INTEGER PRIMARY KEY,
+    record_id INTEGER NOT NULL UNIQUE REFERENCES processing_records(id),
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'promoted')),
+    category TEXT NOT NULL CHECK (category IN ('metric', 'diagnosis', 'retrieval', 'clarification')),
+    input_json TEXT NOT NULL,
+    actual_json TEXT,
+    expected_intent TEXT,
+    expected_tool TEXT,
+    expected_result_json TEXT NOT NULL DEFAULT '{}',
+    notes TEXT,
+    promoted_case_id INTEGER REFERENCES evaluation_cases(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    promoted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_evaluation_candidates_status_created
+ON evaluation_candidates(status, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS evaluation_batches (
     id INTEGER PRIMARY KEY,
     batch_code TEXT NOT NULL UNIQUE,
@@ -201,6 +222,7 @@ CREATE TABLE IF NOT EXISTS evaluation_batches (
     passed_cases INTEGER NOT NULL DEFAULT 0,
     failed_cases INTEGER NOT NULL DEFAULT 0,
     summary_json TEXT,
+    snapshot_json TEXT,
     started_at TEXT,
     completed_at TEXT,
     created_at TEXT NOT NULL
@@ -226,16 +248,25 @@ ON evaluation_batches(created_at DESC);
 
 
 def connect(path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+def _migrate_schema(connection: sqlite3.Connection) -> None:
+    columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(evaluation_batches)")
+    }
+    if "snapshot_json" not in columns:
+        connection.execute("ALTER TABLE evaluation_batches ADD COLUMN snapshot_json TEXT")
 
 
 def ensure_schema(path: str | Path = DEFAULT_DB_PATH) -> None:
     connection = connect(path)
     try:
         connection.executescript(SCHEMA)
+        _migrate_schema(connection)
         _replace_evaluation_cases(connection)
         connection.commit()
     finally:
@@ -345,6 +376,7 @@ def initialize_database(path: str | Path = DEFAULT_DB_PATH) -> None:
     connection = connect(path)
     try:
         connection.executescript(SCHEMA)
+        _migrate_schema(connection)
         demo_users = (
             (1, "operator1", "运营人员一", "Operator123!", "operator"),
             (2, "admin1", "系统管理员", "Admin123!", "admin"),

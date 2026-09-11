@@ -19,6 +19,8 @@ from backend.app.retrieval import search_knowledge
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
+REACT_PROMPT_VERSION = "react-v1"
+REACT_MAX_STEPS = 5
 REACT_PROMPT = """你是广告投放分析助手。你必须只依据已有确定性结果和只读工具结果回答，不能自行计算指标、创造阈值、平台规则或已确认事实。
 
 可用工具：
@@ -152,7 +154,7 @@ def compose_with_react(
             name="AdOps ReAct Agent",
             llm=model,
             tool_registry=registry,
-            max_steps=5,
+            max_steps=REACT_MAX_STEPS,
             custom_prompt=REACT_PROMPT,
         )
         history_text = "\n".join(

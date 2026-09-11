@@ -355,6 +355,111 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(1, overview["intent_counts"]["rule_qa"])
         self.assertEqual({"helpful": 1, "not_helpful": 0}, overview["feedback"])
 
+    def test_admin_can_troubleshoot_traces_across_users(self) -> None:
+        self.login()
+        created = self.client.post(
+            "/api/assistant/messages",
+            json={"message": "CTR 是什么意思？", "context": {}},
+        ).json()
+        trace_id = created["trace_id"]
+        self.assertEqual(403, self.client.get("/api/admin/traces").status_code)
+
+        self.client.cookies.clear()
+        self.client.post(
+            "/api/auth/login", json={"username": "admin1", "password": "Admin123!"}
+        )
+        listed = self.client.get("/api/admin/traces", params={"status": "completed"})
+        self.assertEqual(200, listed.status_code)
+        self.assertEqual(1, listed.json()["data"]["total"])
+        self.assertEqual("operator1", listed.json()["data"]["items"][0]["username"])
+        ineligible = self.client.post(
+            f"/api/admin/traces/{trace_id}/evaluation-candidate"
+        )
+        self.assertEqual("TRACE_NOT_ELIGIBLE", ineligible.json()["error"]["code"])
+
+        detail = self.client.get(f"/api/admin/traces/{trace_id}")
+        self.assertEqual(200, detail.status_code)
+        data = detail.json()["data"]
+        self.assertEqual("completed", data["status"])
+        self.assertGreaterEqual(len(data["events"]), 4)
+        self.assertEqual(
+            list(range(1, len(data["events"]) + 1)),
+            [event["sequence_no"] for event in data["events"]],
+        )
+        self.assertNotIn("Thought:", detail.text)
+        self.assertEqual(404, self.client.get("/api/admin/traces/tr_missing").status_code)
+
+    def test_unhelpful_trace_can_be_promoted_to_evaluation_case(self) -> None:
+        self.login()
+        created = self.client.post(
+            "/api/assistant/messages",
+            json={"message": "CTR 是什么意思？", "context": {}},
+        ).json()
+        record_id = created["data"]["record_id"]
+        trace_id = created["trace_id"]
+        self.client.post(
+            f"/api/records/{record_id}/feedback", json={"rating": "not_helpful"}
+        )
+        self.assertEqual(403, self.client.get("/api/admin/evaluation-candidates").status_code)
+
+        self.client.cookies.clear()
+        self.client.post(
+            "/api/auth/login", json={"username": "admin1", "password": "Admin123!"}
+        )
+        created_candidate = self.client.post(
+            f"/api/admin/traces/{trace_id}/evaluation-candidate"
+        )
+        self.assertEqual(201, created_candidate.status_code)
+        candidate_id = created_candidate.json()["data"]["id"]
+        self.assertEqual(
+            "CANDIDATE_ALREADY_EXISTS",
+            self.client.post(
+                f"/api/admin/traces/{trace_id}/evaluation-candidate"
+            ).json()["error"]["code"],
+        )
+
+        candidates = self.client.get(
+            "/api/admin/evaluation-candidates", params={"status": "draft"}
+        ).json()["data"]
+        self.assertEqual(1, candidates["total"])
+        self.assertEqual("CTR 是什么意思？", candidates["items"][0]["input"]["message"])
+        incomplete = self.client.post(
+            f"/api/admin/evaluation-candidates/{candidate_id}/promote"
+        )
+        self.assertEqual("CANDIDATE_INCOMPLETE", incomplete.json()["error"]["code"])
+
+        saved = self.client.put(
+            f"/api/admin/evaluation-candidates/{candidate_id}",
+            json={
+                "category": "retrieval",
+                "expected_intent": "rule_qa",
+                "expected_tool": "search_knowledge",
+                "expected_result": {"primary_source": "RULE-METRIC-001"},
+                "notes": "用户反馈没帮助，加入回归测试",
+            },
+        )
+        self.assertEqual(200, saved.status_code)
+        promoted = self.client.post(
+            f"/api/admin/evaluation-candidates/{candidate_id}/promote"
+        )
+        self.assertEqual(200, promoted.status_code)
+        self.assertEqual("EVAL-CUSTOM-001", promoted.json()["data"]["case_code"])
+        self.assertEqual(
+            16, self.client.get("/api/admin/evaluations").json()["data"]["case_count"]
+        )
+        detail = self.client.get(f"/api/admin/traces/{trace_id}").json()["data"]
+        self.assertEqual("promoted", detail["evaluation_candidate"]["status"])
+        locked = self.client.put(
+            f"/api/admin/evaluation-candidates/{candidate_id}",
+            json={
+                "category": "retrieval",
+                "expected_intent": "rule_qa",
+                "expected_result": {},
+                "notes": "不能修改",
+            },
+        )
+        self.assertEqual("CANDIDATE_ALREADY_PROMOTED", locked.json()["error"]["code"])
+
     def test_only_admin_can_start_one_evaluation_at_a_time(self) -> None:
         self.login()
         denied = self.client.post("/api/admin/evaluations", json={"name": "无权限"})
@@ -374,6 +479,8 @@ class ApiTest(unittest.TestCase):
         detail = self.client.get(f"/api/admin/evaluations/{batch_id}").json()["data"]
         self.assertEqual("running", detail["status"])
         self.assertEqual(15, detail["total_cases"])
+        self.assertEqual("react-v1", detail["snapshot"]["prompt_version"])
+        self.assertEqual(5, detail["snapshot"]["max_steps"])
 
     def test_conversation_is_persistent_and_private(self) -> None:
         self.login()

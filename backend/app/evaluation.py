@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sqlite3
+import subprocess
 import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 from backend.app.database import connect
+from backend.app.react_service import REACT_MAX_STEPS, REACT_PROMPT_VERSION
 from backend.app.records import (
     create_clarification,
     detect_intent,
@@ -25,6 +29,44 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _version_snapshot(connection: sqlite3.Connection) -> dict[str, object]:
+    root = Path(__file__).resolve().parents[2]
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True,
+            text=True, timeout=2, check=True,
+        ).stdout.strip()
+        dirty = bool(subprocess.run(
+            ["git", "status", "--porcelain"], cwd=root, capture_output=True,
+            text=True, timeout=2, check=True,
+        ).stdout.strip())
+        code_version = f"{commit}-dirty" if dirty else commit
+    except (OSError, subprocess.SubprocessError):
+        code_version = "unknown"
+
+    knowledge = "|".join(
+        f"{row['source_code']}:{row['version']}:{row['content_hash']}"
+        for row in connection.execute(
+            "SELECT source_code, version, content_hash FROM knowledge_sources ORDER BY source_code"
+        )
+    )
+    evaluation_set = "|".join(
+        f"{row['case_code']}:{row['input_json']}:{row['expected_json']}"
+        for row in connection.execute(
+            "SELECT case_code, input_json, expected_json FROM evaluation_cases WHERE enabled = 1 ORDER BY case_code"
+        )
+    )
+    return {
+        "model": os.getenv("LLM_MODEL_ID", "not-configured"),
+        "prompt_version": REACT_PROMPT_VERSION,
+        "code_version": code_version,
+        "knowledge_version": hashlib.sha256(knowledge.encode()).hexdigest()[:12],
+        "evaluation_set_version": hashlib.sha256(evaluation_set.encode()).hexdigest()[:12],
+        "max_steps": REACT_MAX_STEPS,
+        "captured_at": _now(),
+    }
+
+
 def create_batch(connection: sqlite3.Connection, name: str, user_id: int) -> dict[str, object]:
     running = connection.execute(
         "SELECT id FROM evaluation_batches WHERE status IN ('pending', 'running') LIMIT 1"
@@ -36,14 +78,15 @@ def create_batch(connection: sqlite3.Connection, name: str, user_id: int) -> dic
     ).fetchone()[0]
     code = f"EVAL-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
     now = _now()
+    snapshot = _version_snapshot(connection)
     cursor = connection.execute(
         "INSERT INTO evaluation_batches "
-        "(batch_code, name, started_by, status, total_cases, started_at, created_at) "
-        "VALUES (?, ?, ?, 'running', ?, ?, ?)",
-        (code, name.strip() or "离线回归评估", user_id, total, now, now),
+        "(batch_code, name, started_by, status, total_cases, snapshot_json, started_at, created_at) "
+        "VALUES (?, ?, ?, 'running', ?, ?, ?, ?)",
+        (code, name.strip() or "离线回归评估", user_id, total, _json(snapshot), now, now),
     )
     connection.commit()
-    return {"batch_id": cursor.lastrowid, "batch_code": code, "status": "running", "total_cases": total}
+    return {"batch_id": cursor.lastrowid, "batch_code": code, "status": "running", "total_cases": total, "snapshot": snapshot}
 
 
 def _run_actual(source: sqlite3.Connection, case_input: dict[str, object], user_id: int) -> dict[str, object]:
@@ -221,13 +264,14 @@ def run_batch(database_path: str | Path, batch_id: int) -> None:
 def list_batches(connection: sqlite3.Connection) -> list[dict[str, object]]:
     rows = connection.execute(
         "SELECT b.id, b.batch_code, b.name, b.status, b.total_cases, b.passed_cases, "
-        "b.failed_cases, b.summary_json, b.started_at, b.completed_at, b.created_at, u.display_name AS started_by_name "
+        "b.failed_cases, b.summary_json, b.snapshot_json, b.started_at, b.completed_at, b.created_at, u.display_name AS started_by_name "
         "FROM evaluation_batches b JOIN users u ON u.id = b.started_by ORDER BY b.id DESC"
     ).fetchall()
     items = []
     for row in rows:
         item = dict(row)
         item["summary"] = json.loads(item.pop("summary_json")) if item["summary_json"] else None
+        item["snapshot"] = json.loads(item.pop("snapshot_json")) if item["snapshot_json"] else None
         items.append(item)
     return items
 
@@ -241,6 +285,7 @@ def get_batch(connection: sqlite3.Connection, batch_id: int) -> dict[str, object
         return None
     item = dict(batch)
     item["summary"] = json.loads(item.pop("summary_json")) if item["summary_json"] else None
+    item["snapshot"] = json.loads(item.pop("snapshot_json")) if item["snapshot_json"] else None
     rows = connection.execute(
         "SELECT c.case_code, c.category, c.input_json, c.expected_json, r.passed, r.actual_json, "
         "r.scores_json, r.failure_reason, r.latency_ms FROM evaluation_results r "
@@ -276,7 +321,7 @@ def compare_batches(connection: sqlite3.Connection, left_id: int, right_id: int)
         for key in sorted(categories)
     }
     return {
-        "left_batch": {"id": left_id, "batch_code": left["batch_code"], "summary": left_summary},
-        "right_batch": {"id": right_id, "batch_code": right["batch_code"], "summary": right_summary},
+        "left_batch": {"id": left_id, "batch_code": left["batch_code"], "summary": left_summary, "snapshot": left["snapshot"]},
+        "right_batch": {"id": right_id, "batch_code": right["batch_code"], "summary": right_summary, "snapshot": right["snapshot"]},
         "differences": differences,
     }

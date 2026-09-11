@@ -27,6 +27,10 @@ class EvaluationTest(unittest.TestCase):
                 count = connection.execute("SELECT COUNT(*) FROM evaluation_cases").fetchone()[0]
                 self.assertEqual(15, count)
                 batch = create_batch(connection, "回归测试", 2)
+                self.assertEqual("react-v1", batch["snapshot"]["prompt_version"])
+                self.assertEqual(5, batch["snapshot"]["max_steps"])
+                self.assertEqual(12, len(batch["snapshot"]["knowledge_version"]))
+                self.assertEqual(12, len(batch["snapshot"]["evaluation_set_version"]))
             finally:
                 connection.close()
 
@@ -40,10 +44,12 @@ class EvaluationTest(unittest.TestCase):
                 self.assertEqual(15, len(detail["results"]))
                 self.assertEqual(15, detail["passed_cases"])
                 self.assertEqual(1.0, detail["summary"]["overall_pass_rate"])
+                self.assertEqual(batch["snapshot"], detail["snapshot"])
                 comparison = compare_batches(
                     connection, int(batch["batch_id"]), int(batch["batch_id"])
                 )
                 self.assertEqual(0.0, comparison["differences"]["overall_pass_rate"])
+                self.assertEqual(batch["snapshot"], comparison["left_batch"]["snapshot"])
             finally:
                 connection.close()
 

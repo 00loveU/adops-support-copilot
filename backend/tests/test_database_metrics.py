@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from backend.app.database import connect, initialize_database, list_advertisers
@@ -48,6 +49,13 @@ class DatabaseMetricsTest(unittest.TestCase):
             ("没有曝光",),
         ).fetchone()
         self.assertEqual("RULE-DELIVERY-001", source[0])
+
+    def test_request_connection_can_move_between_worker_threads(self) -> None:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            count = pool.submit(
+                lambda: self.connection.execute("SELECT COUNT(*) FROM advertisers").fetchone()[0]
+            ).result()
+        self.assertEqual(5, count)
 
     def test_metric_uses_aggregated_raw_values(self) -> None:
         result = get_campaign_metrics(self.connection, "CMP001", "2026-09-07", "2026-09-08")

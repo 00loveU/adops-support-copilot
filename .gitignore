@@ -10,6 +10,7 @@ __pycache__/
 backend/data/*.db
 backend/data/*.db-shm
 backend/data/*.db-wal
+backend/data/migration-backups/
 
 # 前端依赖和构建产物
 frontend/node_modules/

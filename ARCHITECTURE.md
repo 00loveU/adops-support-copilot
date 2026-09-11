@@ -30,33 +30,60 @@
 ## 2. 总体架构
 
 ```mermaid
-flowchart LR
-    U[广告运营人员/管理员] --> FE[前端 Web 应用]
-    FE -->|HTTP JSON| API[后端 API]
+flowchart TB
+    USER[广告运营人员 / 管理员]
+    LLM[OpenAI 兼容大模型服务]
 
-    subgraph Backend[模块化单体后端]
-        API --> AUTH[认证与权限]
-        API --> APP[诊断应用服务]
-        APP --> ORCH[Agent 编排器]
-        ORCH --> METRIC[指标查询工具]
-        ORCH --> DIAG[异常诊断工具]
-        ORCH --> RAG[规则检索工具]
-        ORCH --> LLM[大模型服务]
-        APP --> TRACE[Trace 记录]
-        API --> RECORD[处理记录服务]
-        API --> EVAL[离线评估服务]
-        API --> ADMIN[管理服务]
+    subgraph HOST[Docker Host]
+        subgraph COMPOSE[Docker Compose]
+            subgraph FRONTEND[frontend 容器]
+                NGINX[Nginx :80]
+                SPA[React / Vite 构建产物]
+                NGINX --> SPA
+            end
+
+            subgraph BACKEND[backend 容器：模块化单体]
+                API[FastAPI API]
+                AUTH[认证与权限]
+                APP[诊断应用服务]
+                ORCH[ReAct Agent 编排]
+                METRIC[指标查询工具]
+                DIAG[异常诊断工具]
+                RAG[FTS5 规则检索工具]
+                TRACE[Trace 事件记录]
+                RECORD[处理记录与反馈]
+                CANDIDATE[评估候选]
+                CASES[固定评估集]
+                EVAL[离线评估与批次对比]
+
+                API --> AUTH
+                API --> APP --> ORCH
+                ORCH --> METRIC
+                ORCH --> DIAG
+                ORCH --> RAG
+                APP --> TRACE
+                APP --> RECORD
+                TRACE -->|失败 / 降级 / 没帮助| CANDIDATE
+                CANDIDATE -->|管理员复核并加入| CASES
+                CASES --> EVAL --> ORCH
+            end
+
+            DATA[(SQLite + FTS5\nadops_data 命名卷)]
+            AUTH --> DATA
+            METRIC --> DATA
+            DIAG --> DATA
+            RAG --> DATA
+            TRACE --> DATA
+            RECORD --> DATA
+            CANDIDATE --> DATA
+            EVAL --> DATA
+        end
     end
 
-    METRIC --> DB[(SQLite)]
-    DIAG --> DB
-    RAG --> FTS[(SQLite FTS5)]
-    AUTH --> DB
-    TRACE --> DB
-    RECORD --> DB
-    EVAL --> DB
-    ADMIN --> DB
-    LLM --> PROVIDER[兼容 OpenAI 接口的大模型服务]
+    USER -->|HTTP :8080| NGINX
+    NGINX -->|静态资源| SPA
+    NGINX -->|/api 反向代理| API
+    ORCH <-->|Function Calling / 回答生成| LLM
 ```
 
 ### 2.1 架构形态
@@ -68,6 +95,14 @@ flowchart LR
 - 前后端只通过约定的 HTTP JSON 接口通信。
 - 前端不能直接访问数据库和大模型服务。
 - 大模型密钥只能保存在后端环境变量中。
+
+### 2.2 部署与请求入口
+
+- Docker Compose 统一编排 `frontend` 和 `backend` 两个容器。
+- 前端镜像使用多阶段构建：Node.js 负责生成静态文件，Nginx 负责托管页面。
+- 浏览器只访问 Nginx 的 `8080` 端口；Nginx 将 `/api` 请求反向代理到 Docker 内部的 `backend:8000`。
+- SQLite 与 FTS5 数据保存在 `adops_data` 命名卷，容器重启或重新创建后仍可保留。
+- 后端的 `8000` 端口额外暴露用于本地调试和查看 OpenAPI 文档，生产部署时可按需取消。
 
 后端第一版采用“模块化单体”，即一个后端进程内按职责划分模块，而不是拆成微服务。第一版的数据量、用户量和开发周期都不需要微服务。
 
@@ -518,21 +553,23 @@ LLM 组织“事实—可能原因—建议—来源”
 
 ### 8.4 离线评估
 
-```text
-管理员发起评估
-  ↓
-创建评估批次
-  ↓
-逐条运行固定测试用例
-  ↓
-使用规则评分
-  ↓
-必要时使用 LLM Judge
-  ↓
-汇总各能力通过率
-  ↓
-保存结果并支持批次对比
+```mermaid
+flowchart LR
+    REQUEST[线上请求] --> TRACE[结构化 Trace]
+    TRACE --> SIGNAL{失败 / 降级 / 没帮助?}
+    SIGNAL -->|是| CANDIDATE[创建评估候选]
+    SIGNAL -->|否| OBSERVE[继续观察]
+    CANDIDATE --> REVIEW[管理员补充预期并复核]
+    REVIEW --> CASES[加入固定评估集]
+    CASES --> RUN[运行离线评估]
+    RUN --> SCORE[确定性规则评分]
+    SCORE --> SNAPSHOT[保存结果与版本快照]
+    SNAPSHOT --> COMPARE[历史批次对比]
+    COMPARE --> IMPROVE[定位失败并改进提示词 / 规则 / 代码]
+    IMPROVE --> RUN
 ```
+
+闭环中的人工复核是质量门禁：Trace 不会自动变成标准答案，只有管理员确认过输入、意图、工具和关键结果后，样本才会进入正式评估集。
 
 ## 9. 异常与降级策略
 
